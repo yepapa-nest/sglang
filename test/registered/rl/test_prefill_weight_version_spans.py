@@ -192,9 +192,9 @@ class TestPrefillWeightVersionSpans(_PrefillWeightVersionServerMixin, CustomTest
 
     def test_05_requests_aborted_before_prefill_carry_no_prompt_spans(self):
         """A request aborted before its prefill ran has no prompt KV to attribute."""
-        self._pause("in_place")
-        try:
-            with ThreadPoolExecutor(max_workers=1) as executor:
+        with ThreadPoolExecutor(max_workers=1) as executor:
+            self._pause("in_place")
+            try:
                 future = executor.submit(
                     self._generate,
                     prompt=_SHARED_PREFIX + "Case five: say hello.",
@@ -202,9 +202,9 @@ class TestPrefillWeightVersionSpans(_PrefillWeightVersionServerMixin, CustomTest
                 )
                 time.sleep(1)
                 self._abort_all()
-                data = future.result()
-        finally:
-            self._continue()
+            finally:
+                self._continue()
+            data = future.result()
 
         meta_info = data["meta_info"]
         self.assertEqual(meta_info["finish_reason"]["type"], "abort")
