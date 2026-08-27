@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import dataclasses
-from typing import TYPE_CHECKING, Any, Dict, Iterable, List
+from typing import TYPE_CHECKING, Any, Dict, Iterable, List, Optional
 
 import msgspec
 
@@ -12,7 +12,6 @@ if TYPE_CHECKING:
 
 
 UNKNOWN_WEIGHT_VERSION = "unknown"
-UNKNOWN_WEIGHT_VERSION_ID = -1
 
 
 # ======================================================================
@@ -88,23 +87,6 @@ def compute_weight_version_spans(
     return spans
 
 
-def compress_version_ids_to_spans(
-    version_ids: List[int], version_str_by_id: List[str]
-) -> WeightVersionSpans:
-    spans: WeightVersionSpans = []
-    for index, version_id in enumerate(version_ids):
-        version = (
-            UNKNOWN_WEIGHT_VERSION
-            if version_id == UNKNOWN_WEIGHT_VERSION_ID
-            else version_str_by_id[version_id]
-        )
-        if spans and spans[-1].version == version:
-            spans[-1].end = index + 1
-            continue
-        spans.append(WeightVersionSpan(version=version, start=index, end=index + 1))
-    return spans
-
-
 # ======================================================================
 # TokenizerManager
 # ======================================================================
@@ -117,22 +99,21 @@ def add_weight_versions_to_meta_info(
         span for span in spans if span.start < num_output_tokens or span.start == 0
     ]
 
-    meta_info["weight_versions"] = [
-        {
-            "version": span.version,
-            "start": span.start,
-            "end": min(span.end, num_output_tokens),
-        }
-        for span in visible
-    ]
+    meta_info["weight_versions"] = weight_version_spans_to_json(
+        visible, end_limit=num_output_tokens
+    )
     meta_info["weight_version"] = visible[-1].version
 
 
-def add_prefill_weight_versions_to_meta_info(
-    meta_info: Dict[str, Any], spans: WeightVersionSpans
-) -> None:
-    meta_info["prefill_weight_versions"] = [
-        {"version": span.version, "start": span.start, "end": span.end}
+def weight_version_spans_to_json(
+    spans: WeightVersionSpans, end_limit: Optional[int] = None
+) -> List[Dict[str, Any]]:
+    return [
+        {
+            "version": span.version,
+            "start": span.start,
+            "end": span.end if end_limit is None else min(span.end, end_limit),
+        }
         for span in spans
     ]
 

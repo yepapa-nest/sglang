@@ -14,7 +14,7 @@ from sglang.test.test_utils import (
     popen_launch_server,
 )
 
-register_cuda_ci(est_time=260, stage="extra-a", runner_config="1-gpu-small")
+register_cuda_ci(est_time=150, stage="extra-a", runner_config="1-gpu-small")
 
 _REQUEST_TIMEOUT = 180
 
@@ -104,6 +104,7 @@ class TestPrefillWeightVersionSpans(_PrefillWeightVersionServerMixin, CustomTest
         data = self._generate(_SHARED_PREFIX + "Case one: count to three.")
 
         meta_info = data["meta_info"]
+        self.assertEqual(meta_info["cached_tokens"], 0)
         spans = _assert_prefill_spans_contiguous(self, meta_info)
         self.assertEqual(len(spans), 1)
         self.assertEqual(spans[0]["version"], "prefill-v0")
@@ -127,18 +128,7 @@ class TestPrefillWeightVersionSpans(_PrefillWeightVersionServerMixin, CustomTest
         self.assertEqual(spans[0]["end"], meta_info["cached_tokens"])
         self.assertEqual(spans[1]["version"], "prefill-v1")
 
-    def test_03_flushing_the_cache_recomputes_the_prefix(self):
-        """After a flush nothing is reused, so the whole prompt carries the current version."""
-        self._flush_cache()
-        data = self._generate(_SHARED_PREFIX + "Case three: name three colors.")
-
-        meta_info = data["meta_info"]
-        self.assertEqual(meta_info["cached_tokens"], 0)
-        spans = _assert_prefill_spans_contiguous(self, meta_info)
-        self.assertEqual(len(spans), 1)
-        self.assertEqual(spans[0]["version"], self._current_version())
-
-    def test_04_relabel_during_decode_leaves_the_prompt_spans_alone(self):
+    def test_03_relabel_during_decode_leaves_the_prompt_spans_alone(self):
         """Prompt attribution follows the KV, so a mid-generation relabel only moves the sampling spans."""
         self._flush_cache()
         version_before = self._current_version()
@@ -169,8 +159,8 @@ class TestPrefillWeightVersionSpans(_PrefillWeightVersionServerMixin, CustomTest
         self.assertEqual(spans[0]["version"], version_before)
         self.assertEqual(meta_info["weight_versions"][0]["version"], version_before)
 
-    def test_05_aborted_requests_still_report_prompt_spans(self):
-        """An abort snapshots the prompt spans before its KV slots go back to the allocator."""
+    def test_04_aborted_requests_still_report_prompt_spans(self):
+        """An aborted request keeps the prompt spans recorded when its prefill finished."""
         with ThreadPoolExecutor(max_workers=1) as executor:
             future = executor.submit(
                 self._generate,
@@ -190,7 +180,7 @@ class TestPrefillWeightVersionSpans(_PrefillWeightVersionServerMixin, CustomTest
         spans = _assert_prefill_spans_contiguous(self, meta_info)
         self.assertEqual(spans[-1]["version"], self._current_version())
 
-    def test_06_openai_metadata_contains_prefill_weight_versions(self):
+    def test_05_openai_metadata_contains_prefill_weight_versions(self):
         """OpenAI-compatible responses surface the prompt spans next to the sampling spans."""
         self._flush_cache()
         response = requests.post(
@@ -211,49 +201,6 @@ class TestPrefillWeightVersionSpans(_PrefillWeightVersionServerMixin, CustomTest
         self.assertEqual(spans[0]["version"], self._current_version())
         self.assertEqual(spans[0]["start"], 0)
         self.assertIn("weight_versions", metadata)
-
-
-class TestPrefillWeightVersionSpansDisabled(
-    _PrefillWeightVersionServerMixin, CustomTestCase
-):
-    @classmethod
-    def setUpClass(cls):
-        cls._launch(["--weight-version", "prefill-off-v0"])
-
-    def test_01_field_is_absent_without_the_flag(self):
-        """Without the flag the prompt spans never reach meta_info, and sampling spans are unchanged."""
-        data = self._generate(_SHARED_PREFIX + "Case seven: say hello.")
-
-        meta_info = data["meta_info"]
-        self.assertNotIn("prefill_weight_versions", meta_info)
-        self.assertEqual(
-            meta_info["weight_versions"],
-            [
-                {
-                    "version": "prefill-off-v0",
-                    "start": 0,
-                    "end": meta_info["completion_tokens"],
-                }
-            ],
-        )
-
-    def test_02_openai_metadata_omits_the_field(self):
-        """The OpenAI metadata block stays as it was before the flag existed."""
-        response = requests.post(
-            f"{self.base_url}/v1/completions",
-            json={
-                "model": self.model,
-                "prompt": _SHARED_PREFIX + "Case eight: say hello.",
-                "max_tokens": 8,
-                "temperature": 0.0,
-            },
-            timeout=_REQUEST_TIMEOUT,
-        )
-        self.assertEqual(response.status_code, 200)
-
-        metadata = response.json()["metadata"]
-        self.assertNotIn("prefill_weight_versions", metadata)
-        self.assertEqual(metadata["weight_version"], "prefill-off-v0")
 
 
 if __name__ == "__main__":

@@ -441,6 +441,24 @@ class TestWeightVersionSpans(CustomTestCase):
         self.assertEqual(spans[0]["start"], 0)
         self.assertEqual(spans[0]["end"], data["usage"]["completion_tokens"])
 
+    def test_13_prefill_weight_versions_absent_without_the_flag(self):
+        """Without --enable-prefill-weight-versions neither meta_info nor OpenAI metadata carries prompt spans."""
+        data = self._generate(max_new_tokens=8)
+        self.assertNotIn("prefill_weight_versions", data["meta_info"])
+
+        response = requests.post(
+            f"{self.base_url}/v1/completions",
+            json={
+                "model": self.model,
+                "prompt": "The capital of France is",
+                "max_tokens": 8,
+                "temperature": 0.0,
+            },
+            timeout=_REQUEST_TIMEOUT,
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertNotIn("prefill_weight_versions", response.json()["metadata"])
+
 
 if __name__ == "__main__":
     unittest.main()

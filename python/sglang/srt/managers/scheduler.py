@@ -237,10 +237,7 @@ from sglang.srt.managers.utils import (
 )
 from sglang.srt.mem_cache import kv_cache_builder
 from sglang.srt.mem_cache.common import maybe_cache_unfinished_req, release_kv_cache
-from sglang.srt.mem_cache.kv_slot_weight_versions import (
-    KvSlotWeightVersions,
-    maybe_record_prefill_weight_versions,
-)
+from sglang.srt.mem_cache.kv_slot_weight_versions import KvSlotWeightVersions
 from sglang.srt.model_executor.forward_batch_info import PPProxyTensors
 from sglang.srt.model_loader.utils import get_resolved_model_impl
 from sglang.srt.multiplex.multiplexing_mixin import SchedulerMultiplexMixin
@@ -1893,8 +1890,9 @@ class Scheduler(
 
         allocator = self.token_to_kv_pool_allocator
         self.kv_slot_weight_versions = KvSlotWeightVersions(
-            num_slots=allocator.size + allocator.page_size + 1,
+            num_slots=allocator.size_full + allocator.page_size,
             device=allocator.device,
+            req_to_token_pool=self.req_to_token_pool,
         )
 
     def init_output_streamer(self) -> None:
@@ -2465,16 +2463,6 @@ class Scheduler(
         else:
             raise ValueError(f"Invalid {self.disaggregation_mode=}")
 
-    def make_abort_req(
-        self, req: Req, finished_reason: Optional[FinishReasonDict] = None
-    ) -> AbortReq:
-        maybe_record_prefill_weight_versions(
-            req,
-            kv_slot_weight_versions=self.kv_slot_weight_versions,
-            req_to_token_pool=self.req_to_token_pool,
-        )
-        return _make_abort_req(req, finished_reason=finished_reason)
-
     def _set_or_validate_priority(self, req: Req) -> bool:
         """Set the default priority value, or abort the request based on the priority scheduling mode."""
         if self.enable_priority_scheduling and req.priority is None:
@@ -2487,7 +2475,7 @@ class Scheduler(
             and req.priority is not None
             and self.abort_on_priority_when_disabled
         ):
-            abort_req = self.make_abort_req(
+            abort_req = _make_abort_req(
                 req,
                 finished_reason={
                     "type": "abort",
@@ -2536,7 +2524,7 @@ class Scheduler(
                 message = "The request is aborted by a higher priority request."
 
         self.ipc_channels.send_to_tokenizer.send_output(
-            self.make_abort_req(
+            _make_abort_req(
                 req_to_abort,
                 finished_reason={
                     "type": "abort",
@@ -2562,7 +2550,7 @@ class Scheduler(
                     # Release prefetch events associated with the request
                     self.tree_cache.release_aborted_request(req.rid)
                 self.ipc_channels.send_to_tokenizer.send_output(
-                    self.make_abort_req(
+                    _make_abort_req(
                         req,
                         finished_reason={
                             "type": "abort",
@@ -2700,7 +2688,7 @@ class Scheduler(
 
         self.chunked_req = None
         self._pending_chunked_abort_req = None
-        self.ipc_channels.send_to_tokenizer.send_output(self.make_abort_req(req), req)
+        self.ipc_channels.send_to_tokenizer.send_output(_make_abort_req(req), req)
         logger.debug(f"Abort chunked prefill request. {req.rid=}")
 
     def _build_hisparse_decode_batch(self, reqs):
@@ -3254,7 +3242,7 @@ class Scheduler(
             for req in reqs_to_abort:
                 abort_reason: FINISH_ABORT = req.to_finish
                 self.ipc_channels.send_to_tokenizer.send_output(
-                    self.make_abort_req(req, finished_reason=abort_reason.to_json()),
+                    _make_abort_req(req, finished_reason=abort_reason.to_json()),
                     req,
                 )
 
@@ -3628,7 +3616,8 @@ class Scheduler(
 
         if self.kv_slot_weight_versions is not None and batch.out_cache_loc is not None:
             self.kv_slot_weight_versions.record(
-                batch.out_cache_loc, version=get_server_args().weight_version
+                slot_indices=batch.out_cache_loc,
+                version=get_server_args().weight_version,
             )
 
         if batch.forward_mode.is_decode():
@@ -4157,9 +4146,7 @@ class Scheduler(
             if self.enable_hicache_storage:
                 # to release prefetch events associated with the request
                 self.tree_cache.release_aborted_request(req.rid)
-            self.ipc_channels.send_to_tokenizer.send_output(
-                self.make_abort_req(req), req
-            )
+            self.ipc_channels.send_to_tokenizer.send_output(_make_abort_req(req), req)
             # For disaggregation decode mode, the request in the waiting queue has KV cache allocated.
             if self.disaggregation_mode == DisaggregationMode.DECODE:
                 release_kv_cache(req, self.tree_cache)
@@ -4192,7 +4179,7 @@ class Scheduler(
                 if self.enable_hicache_storage:
                     self.tree_cache.release_aborted_request(req.rid)
                 self.ipc_channels.send_to_tokenizer.send_output(
-                    self.make_abort_req(req), req
+                    _make_abort_req(req), req
                 )
                 if (
                     req.req_pool_idx is not None
@@ -4247,7 +4234,7 @@ class Scheduler(
                         assert hasattr(decode_req, "kv_cache_cpu")
                         del decode_req.kv_cache_cpu
                         self.ipc_channels.send_to_tokenizer.send_output(
-                            self.make_abort_req(decode_req), decode_req
+                            _make_abort_req(decode_req), decode_req
                         )
                     else:
                         remaining_retracted.append(decode_req)
