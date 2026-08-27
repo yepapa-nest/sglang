@@ -14,6 +14,7 @@ from sglang.srt.utils.weight_versions import (
     WeightVersionSpan,
     add_weight_versions_to_meta_info,
     build_endpoint_weight_version_metadata,
+    compress_version_ids_to_spans,
     compute_weight_version_spans,
     record_weight_version_events,
     truncate_weight_version_events,
@@ -383,6 +384,57 @@ class TestSchedulerRecordWeightVersionChange(CustomTestCase):
 
         self.assertEqual(scheduler.server_args.weight_version, "v1")
         self.assertEqual(req.weight_version_events, [])
+
+
+class TestCompressVersionIdsToSpans(CustomTestCase):
+    def test_empty_input_yields_no_spans(self):
+        """A zero-length prompt compresses to an empty span list."""
+        self.assertEqual(
+            compress_version_ids_to_spans([], version_str_by_id=["v0"]), []
+        )
+
+    def test_a_single_run_collapses_into_one_span(self):
+        """Consecutive ids naming the same version become one span."""
+        self.assertEqual(
+            compress_version_ids_to_spans([0, 0, 0], version_str_by_id=["v0"]),
+            [WeightVersionSpan(version="v0", start=0, end=3)],
+        )
+
+    def test_runs_split_at_every_version_change(self):
+        """Each change of version starts a new half-open span."""
+        self.assertEqual(
+            compress_version_ids_to_spans(
+                [0, 0, 1, 1, 0], version_str_by_id=["v0", "v1"]
+            ),
+            [
+                WeightVersionSpan(version="v0", start=0, end=2),
+                WeightVersionSpan(version="v1", start=2, end=4),
+                WeightVersionSpan(version="v0", start=4, end=5),
+            ],
+        )
+
+    def test_unrecorded_ids_become_the_unknown_version(self):
+        """Slots never stamped by a forward report as "unknown" instead of raising."""
+        self.assertEqual(
+            compress_version_ids_to_spans([-1, -1, 0], version_str_by_id=["v0"]),
+            [
+                WeightVersionSpan(version="unknown", start=0, end=2),
+                WeightVersionSpan(version="v0", start=2, end=3),
+            ],
+        )
+
+    def test_spans_are_contiguous_and_cover_the_whole_input(self):
+        """The result tiles [0, len) with no gaps and no overlaps."""
+        version_ids = [0, 1, 1, -1, 2, 2, 0]
+        spans = compress_version_ids_to_spans(
+            version_ids, version_str_by_id=["v0", "v1", "v2"]
+        )
+
+        self.assertEqual(spans[0].start, 0)
+        self.assertEqual(spans[-1].end, len(version_ids))
+        for previous, current in zip(spans, spans[1:]):
+            self.assertEqual(previous.end, current.start)
+            self.assertNotEqual(previous.version, current.version)
 
 
 class TestRecordWeightVersionEvents(CustomTestCase):

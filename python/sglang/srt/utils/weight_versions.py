@@ -11,6 +11,10 @@ if TYPE_CHECKING:
     from sglang.srt.managers.schedule_batch import Req
 
 
+UNKNOWN_WEIGHT_VERSION = "unknown"
+UNKNOWN_WEIGHT_VERSION_ID = -1
+
+
 # ======================================================================
 # Shared types
 # ======================================================================
@@ -81,6 +85,23 @@ def compute_weight_version_spans(
             continue
         start = spans[-1].end if spans else 0
         spans.append(WeightVersionSpan(version=version, start=start, end=end))
+    return spans
+
+
+def compress_version_ids_to_spans(
+    version_ids: List[int], version_str_by_id: List[str]
+) -> WeightVersionSpans:
+    spans: WeightVersionSpans = []
+    for index, version_id in enumerate(version_ids):
+        version = (
+            UNKNOWN_WEIGHT_VERSION
+            if version_id == UNKNOWN_WEIGHT_VERSION_ID
+            else version_str_by_id[version_id]
+        )
+        if spans and spans[-1].version == version:
+            spans[-1].end = index + 1
+            continue
+        spans.append(WeightVersionSpan(version=version, start=index, end=index + 1))
     return spans
 
 

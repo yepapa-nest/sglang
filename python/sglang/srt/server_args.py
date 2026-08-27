@@ -1137,6 +1137,10 @@ class ServerArgs:
         str,
         "Version identifier for the model weights. Defaults to 'default' if not specified.",
     ] = "default"
+    enable_prefill_weight_versions: A[
+        bool,
+        "Track which weight version computed the KV cache of every prompt token and report it as meta_info['prefill_weight_versions'].",
+    ] = False
     chat_template: A[
         Optional[str],
         "The buliltin chat template name or the path of the chat template file. This is only used for OpenAI-compatible API server.",

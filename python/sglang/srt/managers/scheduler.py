@@ -237,6 +237,7 @@ from sglang.srt.managers.utils import (
 )
 from sglang.srt.mem_cache import kv_cache_builder
 from sglang.srt.mem_cache.common import maybe_cache_unfinished_req, release_kv_cache
+from sglang.srt.mem_cache.kv_slot_weight_versions import KvSlotWeightVersions
 from sglang.srt.model_executor.forward_batch_info import PPProxyTensors
 from sglang.srt.model_loader.utils import get_resolved_model_impl
 from sglang.srt.multiplex.multiplexing_mixin import SchedulerMultiplexMixin
@@ -570,6 +571,8 @@ class Scheduler(
         self.init_kv_events_publisher()
 
         self.init_load_inquirer()
+
+        self.init_kv_slot_weight_versions()
 
         self.init_output_streamer()
 
@@ -1878,6 +1881,17 @@ class Scheduler(
             get_disagg_decode_transfer_queue=lambda: self.disagg_decode_transfer_queue,
             get_spec_total_num_accept_tokens=lambda: self.metrics_reporter.spec_total_num_accept_tokens,
             get_spec_total_num_forward_ct=lambda: self.metrics_reporter.spec_total_num_forward_ct,
+        )
+
+    def init_kv_slot_weight_versions(self) -> None:
+        if not self.server_args.enable_prefill_weight_versions:
+            self.kv_slot_weight_versions = None
+            return
+
+        allocator = self.token_to_kv_pool_allocator
+        self.kv_slot_weight_versions = KvSlotWeightVersions(
+            num_slots=allocator.size + allocator.page_size + 1,
+            device=allocator.device,
         )
 
     def init_output_streamer(self) -> None:
@@ -3597,6 +3611,11 @@ class Scheduler(
         result: Union[GenerationBatchResult, EmbeddingBatchResult],
     ):
         self.publish_load_snapshot(force=batch.forward_mode.is_extend())
+
+        if self.kv_slot_weight_versions is not None and batch.out_cache_loc is not None:
+            self.kv_slot_weight_versions.record(
+                batch.out_cache_loc, version=get_server_args().weight_version
+            )
 
         if batch.forward_mode.is_decode():
             self.batch_result_processor.process_batch_result_decode(batch, result)
