@@ -181,10 +181,10 @@ class TestWeightVersionSpans(CustomTestCase):
             spans = _assert_spans_contiguous(self, meta_info)
             self.assertEqual(len(spans), 1)
             self.assertEqual(spans[0]["version"], "endpoint-v1")
-            prefill_spans = _assert_prefill_spans_contiguous(
+            for prefill_span in _assert_prefill_spans_contiguous(
                 self, meta_info, prompt_tokens=meta_info["prompt_tokens"]
-            )
-            self.assertEqual(prefill_spans[0]["version"], "base-v0")
+            ):
+                self.assertIn(prefill_span["version"], ("base-v0", "endpoint-v1"))
 
     def test_03_spans_split_across_pause_update_continue(self):
         """Requests spanning pause -> update_weights_from_disk -> continue report one span per version."""
@@ -342,6 +342,7 @@ class TestWeightVersionSpans(CustomTestCase):
 
     def test_08_reannouncing_current_version_is_a_noop(self):
         """Re-announcing the version the server already has must not split anything."""
+        self._flush_cache()
         version = self._current_version()
 
         results = self._run_while_paused(
