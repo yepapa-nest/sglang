@@ -10,6 +10,7 @@ from sglang.srt.utils.common import (
 )
 from sglang.srt.utils.weight_versions import (
     WeightVersionEvent,
+    WeightVersionSpans,
     truncate_weight_version_events,
 )
 
@@ -926,6 +927,7 @@ class Req(ReqDllmMixin):
         self.retracted_stain = False
 
         self.weight_version_events: List[WeightVersionEvent] = []
+        self.prefill_weight_versions: Optional[WeightVersionSpans] = None
 
         # Incremental streamining
         self.send_token_offset: int = 0

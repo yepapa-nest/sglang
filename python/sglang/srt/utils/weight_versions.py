@@ -128,6 +128,15 @@ def add_weight_versions_to_meta_info(
     meta_info["weight_version"] = visible[-1].version
 
 
+def add_prefill_weight_versions_to_meta_info(
+    meta_info: Dict[str, Any], spans: WeightVersionSpans
+) -> None:
+    meta_info["prefill_weight_versions"] = [
+        {"version": span.version, "start": span.start, "end": span.end}
+        for span in spans
+    ]
+
+
 # ======================================================================
 # OpenAI-compatible endpoints
 # ======================================================================
@@ -135,4 +144,6 @@ def build_endpoint_weight_version_metadata(meta_info: Dict[str, Any]) -> Dict[st
     metadata = {"weight_version": meta_info["weight_version"]}
     if "weight_versions" in meta_info:
         metadata["weight_versions"] = meta_info["weight_versions"]
+    if "prefill_weight_versions" in meta_info:
+        metadata["prefill_weight_versions"] = meta_info["prefill_weight_versions"]
     return metadata

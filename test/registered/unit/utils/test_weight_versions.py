@@ -29,6 +29,7 @@ class _ReqStub:
     def __init__(self, output_len: int):
         self.output_ids = [0] * output_len
         self.weight_version_events = []
+        self.prefill_weight_versions = None
 
     def record_weight_version_change(self, old_version):
         record_weight_version_events([self], old_version=old_version)
@@ -495,11 +496,16 @@ class TestSpanlessAbortPaths(CustomTestCase):
         scheduler = SimpleNamespace(
             enable_priority_scheduling=False,
             abort_on_priority_when_disabled=True,
+            kv_slot_weight_versions=None,
+            req_to_token_pool=None,
             ipc_channels=SimpleNamespace(
                 send_to_tokenizer=SimpleNamespace(
                     send_output=lambda obj, req_arg: sent.append(obj)
                 )
             ),
+        )
+        scheduler.make_abort_req = lambda req_arg, finished_reason=None: (
+            Scheduler.make_abort_req(scheduler, req_arg, finished_reason)
         )
 
         with patch(

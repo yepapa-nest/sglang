@@ -1,8 +1,12 @@
 import unittest
+from typing import List
 
 import torch
 
-from sglang.srt.mem_cache.kv_slot_weight_versions import KvSlotWeightVersions
+from sglang.srt.mem_cache.kv_slot_weight_versions import (
+    KvSlotWeightVersions,
+    maybe_record_prefill_weight_versions,
+)
 from sglang.srt.utils.weight_versions import WeightVersionSpan
 from sglang.test.ci.ci_register import register_cpu_ci
 from sglang.test.test_utils import CustomTestCase
@@ -16,6 +20,22 @@ def _table(num_slots: int = 16) -> KvSlotWeightVersions:
 
 def _slots(*indices: int) -> torch.Tensor:
     return torch.tensor(indices, dtype=torch.int64)
+
+
+class _ReqStub:
+    def __init__(self, num_prompt_tokens: int, kv_committed_len: int):
+        self.origin_input_ids = [0] * num_prompt_tokens
+        self.kv_committed_len = kv_committed_len
+        self.req_pool_idx = 1
+        self.prefill_weight_versions = None
+
+
+class _ReqToTokenPoolStub:
+    def __init__(self, slots_of_req: List[int]):
+        self.req_to_token = torch.zeros((2, 32), dtype=torch.int32)
+        self.req_to_token[1, : len(slots_of_req)] = torch.tensor(
+            slots_of_req, dtype=torch.int32
+        )
 
 
 class TestKvSlotWeightVersions(CustomTestCase):
@@ -93,6 +113,91 @@ class TestKvSlotWeightVersions(CustomTestCase):
     def test_empty_lookup_returns_no_spans(self):
         """Looking up an empty prompt yields an empty span list."""
         self.assertEqual(_table().lookup_spans(_slots()), [])
+
+
+class TestMaybeRecordPrefillWeightVersions(CustomTestCase):
+    def test_prompt_slots_are_looked_up_and_stored_on_the_request(self):
+        """The prompt's KV slots resolve to the versions that computed them."""
+        table = _table()
+        table.record(_slots(4, 5), version="v0")
+        table.record(_slots(6), version="v1")
+        req = _ReqStub(num_prompt_tokens=3, kv_committed_len=5)
+
+        maybe_record_prefill_weight_versions(
+            req,
+            kv_slot_weight_versions=table,
+            req_to_token_pool=_ReqToTokenPoolStub([4, 5, 6, 7, 8]),
+        )
+
+        self.assertEqual(
+            req.prefill_weight_versions,
+            [
+                WeightVersionSpan(version="v0", start=0, end=2),
+                WeightVersionSpan(version="v1", start=2, end=3),
+            ],
+        )
+
+    def test_lookup_is_clamped_to_the_committed_kv_length(self):
+        """A prompt aborted mid-prefill reports only the tokens whose KV was actually written."""
+        table = _table()
+        table.record(_slots(4, 5), version="v0")
+        req = _ReqStub(num_prompt_tokens=5, kv_committed_len=2)
+
+        maybe_record_prefill_weight_versions(
+            req,
+            kv_slot_weight_versions=table,
+            req_to_token_pool=_ReqToTokenPoolStub([4, 5]),
+        )
+
+        self.assertEqual(
+            req.prefill_weight_versions,
+            [WeightVersionSpan(version="v0", start=0, end=2)],
+        )
+
+    def test_disabled_tracking_leaves_the_request_untouched(self):
+        """With no table the request keeps None, so nothing reaches meta_info."""
+        req = _ReqStub(num_prompt_tokens=3, kv_committed_len=3)
+
+        maybe_record_prefill_weight_versions(
+            req,
+            kv_slot_weight_versions=None,
+            req_to_token_pool=_ReqToTokenPoolStub([4, 5, 6]),
+        )
+
+        self.assertIsNone(req.prefill_weight_versions)
+
+    def test_an_already_recorded_request_is_not_looked_up_again(self):
+        """The first lookup wins, so a later abort cannot overwrite freed-slot garbage in."""
+        table = _table()
+        table.record(_slots(4, 5, 6), version="v1")
+        req = _ReqStub(num_prompt_tokens=3, kv_committed_len=3)
+        req.prefill_weight_versions = [
+            WeightVersionSpan(version="v0", start=0, end=3)
+        ]
+
+        maybe_record_prefill_weight_versions(
+            req,
+            kv_slot_weight_versions=table,
+            req_to_token_pool=_ReqToTokenPoolStub([4, 5, 6]),
+        )
+
+        self.assertEqual(
+            req.prefill_weight_versions,
+            [WeightVersionSpan(version="v0", start=0, end=3)],
+        )
+
+    def test_a_request_without_a_pool_slot_is_skipped(self):
+        """A request whose KV was never allocated has nothing to look up."""
+        req = _ReqStub(num_prompt_tokens=3, kv_committed_len=3)
+        req.req_pool_idx = None
+
+        maybe_record_prefill_weight_versions(
+            req,
+            kv_slot_weight_versions=_table(),
+            req_to_token_pool=_ReqToTokenPoolStub([4, 5, 6]),
+        )
+
+        self.assertIsNone(req.prefill_weight_versions)
 
 
 if __name__ == "__main__":
