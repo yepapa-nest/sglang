@@ -282,7 +282,6 @@ class TestWeightVersionSpans(CustomTestCase):
             num_requests=4,
             while_paused=lambda: self._set_weight_version("inplace-v3"),
             mode="in_place",
-            max_new_tokens=256,
         )
         self.assertEqual(self._current_version(), "inplace-v3")
 
