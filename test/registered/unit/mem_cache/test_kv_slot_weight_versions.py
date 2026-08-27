@@ -171,9 +171,7 @@ class TestMaybeRecordPrefillWeightVersions(CustomTestCase):
         table = _table()
         table.record(_slots(4, 5, 6), version="v1")
         req = _ReqStub(num_prompt_tokens=3, kv_committed_len=3)
-        req.prefill_weight_versions = [
-            WeightVersionSpan(version="v0", start=0, end=3)
-        ]
+        req.prefill_weight_versions = [WeightVersionSpan(version="v0", start=0, end=3)]
 
         maybe_record_prefill_weight_versions(
             req,
