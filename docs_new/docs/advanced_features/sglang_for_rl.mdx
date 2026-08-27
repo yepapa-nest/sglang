@@ -597,6 +597,25 @@ A request can outlive a version change: the RL flow retracts it with `pause_gene
 - Aborted requests carry both fields too, with spans clamped to the tokens actually returned. OpenAI-compatible non-streaming responses surface them under `metadata`, for the first choice when `n > 1`.
 - Not covered at update time yet: requests parked in PD-disaggregation or dLLM staging queues, and schedulers added by elastic scale-up before their first update.
 
+### Prefill KV Weight Version Attribution
+
+The spans above name the weights that **sampled** each output token. Prompt tokens are a separate question: with prefix caching on, a request can be served from KV that some earlier request computed under older weights, and in a fully-async RL flow that reuse is unbounded — nothing evicts a shared prefix just because the weights moved on. Launch with `--enable-prefill-weight-versions` to see it:
+
+```json Output
+"prefill_weight_versions": [
+    {"version": "41", "start": 0, "end": 512},
+    {"version": "42", "start": 512, "end": 640}
+]
+```
+
+- The scheduler keeps one weight-version id per KV slot and stamps every slot each forward writes. On finish or abort the request's prompt slots are read back and run-length encoded, so a span says which weights computed the KV that prompt token is currently served from.
+- Ranges are half-open `[start, end)` over **prompt**-token indices, output excluded — the mirror image of `weight_versions`. The two fields cover disjoint token ranges and are not comparable span by span.
+- A leading span older than the current version is the interesting case: it is exactly the shared prefix that a radix-cache hit reused. `POST /flush_cache` after a refit makes it disappear; `start`/`end` of that first span match `meta_info["cached_tokens"]`.
+- Slots the tracker never saw report `"unknown"` — KV loaded back from a hierarchical-cache host tier, KV computed before the flag was on, and KV transferred in by PD disaggregation.
+- A retracted and re-prefilled request reports whatever its new KV came from, which is the reuse decision the scheduler actually made on the retry, not the original prefill.
+- Aborted requests carry the field too, snapshotted before their slots return to the allocator. OpenAI-compatible non-streaming responses surface it under `metadata`, and streaming responses only on the final chunk.
+- The flag costs 4 bytes per KV slot on the device (about 4 MB per million tokens of KV capacity) and one device-to-host read per finished request. Nothing is allocated and no path changes while it is off.
+
 ## Easy To Postpone Generation
 
 Multi-turn RL rollouts often suffer from long-tail requests that block the entire batch. A small number of slow interactions can stall all GPUs, and the long-tail behavior makes profiling and monitoring difficult.
