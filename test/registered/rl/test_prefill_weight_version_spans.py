@@ -78,6 +78,21 @@ class _PrefillWeightVersionServerMixin:
         self.assertEqual(response.status_code, 200)
         return response.json()["weight_version"]
 
+    def _pause(self, mode: str):
+        requests.post(
+            f"{self.base_url}/pause_generation", json={"mode": mode}, timeout=30
+        ).raise_for_status()
+
+    def _continue(self):
+        requests.post(
+            f"{self.base_url}/continue_generation", json={}, timeout=30
+        ).raise_for_status()
+
+    def _abort_all(self):
+        requests.post(
+            f"{self.base_url}/abort_request", json={"abort_all": True}, timeout=30
+        ).raise_for_status()
+
     def _set_weight_version(self, new_version: str):
         response = requests.post(
             f"{self.base_url}/update_weight_version",
@@ -140,17 +155,11 @@ class TestPrefillWeightVersionSpans(_PrefillWeightVersionServerMixin, CustomTest
                 max_new_tokens=256,
             )
             time.sleep(2)
-            requests.post(
-                f"{self.base_url}/pause_generation",
-                json={"mode": "in_place"},
-                timeout=30,
-            ).raise_for_status()
+            self._pause("in_place")
             try:
                 self._set_weight_version("prefill-v2")
             finally:
-                requests.post(
-                    f"{self.base_url}/continue_generation", json={}, timeout=30
-                ).raise_for_status()
+                self._continue()
             data = future.result()
 
         meta_info = data["meta_info"]
@@ -164,23 +173,45 @@ class TestPrefillWeightVersionSpans(_PrefillWeightVersionServerMixin, CustomTest
         with ThreadPoolExecutor(max_workers=1) as executor:
             future = executor.submit(
                 self._generate,
-                prompt=_SHARED_PREFIX + "Case five: write an even longer story.",
-                max_new_tokens=2048,
+                prompt=_SHARED_PREFIX + "Case four: write an even longer story.",
+                max_new_tokens=8192,
             )
-            time.sleep(3)
-            requests.post(
-                f"{self.base_url}/abort_request",
-                json={"abort_all": True},
-                timeout=30,
-            ).raise_for_status()
+            time.sleep(1)
+            self._pause("in_place")
+            try:
+                self._abort_all()
+            finally:
+                self._continue()
             data = future.result()
 
         meta_info = data["meta_info"]
         self.assertEqual(meta_info["finish_reason"]["type"], "abort")
+        self.assertGreater(meta_info["completion_tokens"], 0)
         spans = _assert_prefill_spans_contiguous(self, meta_info)
         self.assertEqual(spans[-1]["version"], self._current_version())
 
-    def test_05_openai_metadata_contains_prefill_weight_versions(self):
+    def test_05_requests_aborted_before_prefill_carry_no_prompt_spans(self):
+        """A request aborted before its prefill ran has no prompt KV to attribute."""
+        self._pause("in_place")
+        try:
+            with ThreadPoolExecutor(max_workers=1) as executor:
+                future = executor.submit(
+                    self._generate,
+                    prompt=_SHARED_PREFIX + "Case five: say hello.",
+                    max_new_tokens=8,
+                )
+                time.sleep(1)
+                self._abort_all()
+                data = future.result()
+        finally:
+            self._continue()
+
+        meta_info = data["meta_info"]
+        self.assertEqual(meta_info["finish_reason"]["type"], "abort")
+        self.assertEqual(meta_info["completion_tokens"], 0)
+        self.assertNotIn("prefill_weight_versions", meta_info)
+
+    def test_06_openai_metadata_contains_prefill_weight_versions(self):
         """OpenAI-compatible responses surface the prompt spans next to the sampling spans."""
         self._flush_cache()
         response = requests.post(
